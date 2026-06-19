@@ -16,8 +16,7 @@ export async function uploadBlob(
   const res = await put(pathname, data, {
     access: "public",
     contentType,
-    allowOverwrite: true,
-    addRandomSuffix: false,
+    addRandomSuffix: true, // unguessable URL — public store, but nobody can enumerate media
   });
   return res.url;
 }
