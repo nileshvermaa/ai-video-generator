@@ -1,6 +1,8 @@
 // OpenAI adapter — implements every capability with raw fetch. Pure: returns
-// bytes, never writes to disk (serverless-safe).
-import { OPENAI_API_KEY, OPENAI_BASE_URL } from "../env";
+// bytes, never writes to disk (serverless-safe). The API key is resolved at
+// call time from the keystore (env var locally, encrypted Blob in production).
+import { OPENAI_BASE_URL } from "../env";
+import { getApiKey } from "../core/keystore";
 import type {
   Provider,
   SpeechRequest,
@@ -13,18 +15,19 @@ import type {
   VideoJobRef,
 } from "./types";
 
-function auth(): Record<string, string> {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set (set it in the Vercel project env)");
-  return { Authorization: `Bearer ${OPENAI_API_KEY}` };
+async function authHeaders(): Promise<Record<string, string>> {
+  const key = await getApiKey();
+  if (!key) {
+    throw new Error("No OpenAI key configured. Open the setup page (your connector URL with /setup instead of /mcp) and paste your OpenAI API key.");
+  }
+  return { Authorization: `Bearer ${key}` };
 }
 
-// gpt-image-1 supported sizes.
 function aspectToImageSize(aspect = "1:1"): string {
   if (aspect === "9:16") return "1024x1536";
   if (aspect === "16:9") return "1536x1024";
   return "1024x1024";
 }
-// Sora-2 portrait/landscape sizes.
 function aspectToVideoSize(aspect = "9:16"): string {
   if (aspect === "16:9") return "1280x720";
   return "720x1280"; // 9:16 default
@@ -38,7 +41,7 @@ export class OpenAIProvider implements Provider {
     const model = "gpt-4o-mini-tts";
     const res = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
       method: "POST",
-      headers: { ...auth(), "Content-Type": "application/json" },
+      headers: { ...(await authHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: req.text, voice: req.voice || "alloy", response_format: "mp3" }),
     });
     if (!res.ok) throw new Error(`TTS ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -51,7 +54,7 @@ export class OpenAIProvider implements Provider {
     fd.append("model", "whisper-1");
     fd.append("response_format", "verbose_json");
     fd.append("timestamp_granularities[]", "word");
-    const res = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, { method: "POST", headers: auth(), body: fd });
+    const res = await fetch(`${OPENAI_BASE_URL}/audio/transcriptions`, { method: "POST", headers: await authHeaders(), body: fd });
     if (!res.ok) throw new Error(`Whisper ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const data: any = await res.json();
     const words = (data.words || []).map((w: any) => ({ word: w.word, start: w.start, end: w.end }));
@@ -62,7 +65,7 @@ export class OpenAIProvider implements Provider {
   async generateImage(req: ImageRequest): Promise<ImageResult> {
     const res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
       method: "POST",
-      headers: { ...auth(), "Content-Type": "application/json" },
+      headers: { ...(await authHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify({ model: "gpt-image-1", prompt: req.prompt, size: aspectToImageSize(req.aspect) }),
     });
     if (!res.ok) throw new Error(`Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -84,7 +87,7 @@ export class OpenAIProvider implements Provider {
     const plan = this.planVideo(req);
     const res = await fetch(plan.endpoint, {
       method: "POST",
-      headers: { ...auth(), "Content-Type": "application/json" },
+      headers: { ...(await authHeaders()), "Content-Type": "application/json" },
       body: JSON.stringify(plan.body),
     });
     const text = await res.text();
@@ -94,7 +97,7 @@ export class OpenAIProvider implements Provider {
   }
 
   async getVideo(providerJobId: string): Promise<VideoJobRef> {
-    const res = await fetch(`${OPENAI_BASE_URL}/videos/${providerJobId}`, { headers: auth() });
+    const res = await fetch(`${OPENAI_BASE_URL}/videos/${providerJobId}`, { headers: await authHeaders() });
     const text = await res.text();
     if (!res.ok) throw new Error(`Sora get ${res.status}: ${text.slice(0, 300)}`);
     const data: any = JSON.parse(text);
@@ -102,7 +105,7 @@ export class OpenAIProvider implements Provider {
   }
 
   async downloadVideo(providerJobId: string): Promise<Buffer> {
-    const res = await fetch(`${OPENAI_BASE_URL}/videos/${providerJobId}/content`, { headers: auth() });
+    const res = await fetch(`${OPENAI_BASE_URL}/videos/${providerJobId}/content`, { headers: await authHeaders() });
     if (!res.ok) throw new Error(`Sora content ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return Buffer.from(await res.arrayBuffer());
   }

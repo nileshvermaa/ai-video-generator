@@ -25,10 +25,9 @@ Next phase: **hybrid render** — footage + animated caption/overlays composited
 In your **Vercel** project (repo is already connected — pushes auto-deploy):
 
 1. **Storage → Create → Blob**, link it to the project. (Sets `BLOB_READ_WRITE_TOKEN`.)
-2. **Settings → Environment Variables**, add:
-   - `OPENAI_API_KEY` — an OpenAI key **with Sora-2 access** (gated; verify with `npm run probe:full`)
-   - `MCP_SECRET` — a long random string (the connector URL embeds it)
+2. **Settings → Environment Variables** → add `MCP_SECRET` (a long random string).
 3. **Redeploy.**
+4. Open `https://<your-app>.vercel.app/<MCP_SECRET>/setup` and paste your OpenAI key (needs Sora-2 access). It's encrypted and stored — never in the dashboard.
 
 Your connector URL is: `https://<your-app>.vercel.app/<MCP_SECRET>/mcp`
 

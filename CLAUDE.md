@@ -56,25 +56,30 @@ Claude app (tablet)  ──custom connector──▶  Vercel
 
 `dryRun: true` on `generate_clip` returns the exact request without spending — use it to test wiring.
 
-## Environment variables (set in Vercel → Project → Settings → Environment Variables)
+## Environment variables (Vercel → Project → Settings → Environment Variables)
 
 | Var | Required | What |
 |---|---|---|
-| `OPENAI_API_KEY` | yes | The OpenAI key used for TTS, Whisper, Sora, images. **Must have Sora-2 access** for video (gated — see Gotchas). |
-| `MCP_SECRET` | yes | High-entropy string. The connector URL is `https://<app>/<MCP_SECRET>/mcp`. The secret never lives in this repo. |
-| `BLOB_READ_WRITE_TOKEN` | yes | Auto-injected when you create + link a Vercel **Blob store** (Storage → Create → Blob). Needed to deliver audio/video URLs. |
+| `MCP_SECRET` | yes | High-entropy string. Connector URL is `https://<app>/<MCP_SECRET>/mcp`; setup page is `/<MCP_SECRET>/setup`. Also derives the AES key that encrypts the stored OpenAI key. Never in the repo. |
+| `BLOB_READ_WRITE_TOKEN` | yes | Auto-injected when you create + link a Vercel **Blob store**. Stores artifacts + the encrypted key. |
+| `OPENAI_API_KEY` | no | NOT used in production — the key is provided via the `/setup` page (see below). This env var is only a convenience for **local dev**. |
 | `OPENAI_BASE_URL` | no | Override the API base (Azure/proxy). |
 
-After changing env vars, **redeploy** (Vercel → Deployments → Redeploy, or push a commit).
+After changing env vars, **redeploy**.
+
+### Bring-your-own-key (no OpenAI key in the dashboard)
+
+The OpenAI key is never a Vercel env var. After deploy, open `https://<app>/<MCP_SECRET>/setup`, paste the key once — it's validated against OpenAI (and we report Sora-2 availability), encrypted with AES-256-GCM using a key derived from `MCP_SECRET`, and stored in Blob (`config/openai.enc`). Tools decrypt it at call time (`src/core/keystore.ts`). Rotate by re-pasting.
 
 ## Deploy
 
 The repo is connected to Vercel; every push to `main` auto-deploys.
 
 1. In Vercel: create a **Blob store** and link it to the project (sets `BLOB_READ_WRITE_TOKEN`).
-2. Add env vars `OPENAI_API_KEY` and `MCP_SECRET`.
+2. Add the env var `MCP_SECRET` (a long random string). No OpenAI key here.
 3. Push to `main` (or hit Redeploy).
-4. Smoke-check: `GET https://<app>/` → 200; `GET https://<app>/mcp` → 404 (the bare path is closed by the gate); the connector lives at `https://<app>/<MCP_SECRET>/mcp`.
+4. Open `https://<app>/<MCP_SECRET>/setup` and paste the OpenAI key (validated + stored encrypted).
+5. Smoke-check: `GET https://<app>/` → 200; `GET https://<app>/mcp` → 404 (bare path closed); connector is `https://<app>/<MCP_SECRET>/mcp`.
 
 ## Connect it to the Claude app (one-time, do it on claude.ai web)
 
