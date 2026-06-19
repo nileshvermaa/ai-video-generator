@@ -1,0 +1,24 @@
+# dependencies
+node_modules/
+
+# secrets — NEVER commit
+.env
+.env*.local
+*.local
+
+# next.js
+/.next/
+/out/
+/build
+next-env.d.ts
+*.tsbuildinfo
+
+# vercel
+.vercel
+
+# generated video projects (runtime output, can be large)
+projects/
+
+# misc build / temp
+dist/
+.probe-tmp/

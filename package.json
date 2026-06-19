@@ -1,0 +1,34 @@
+{
+  "name": "reel-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Hybrid AI video platform — Claude Code drives it over MCP. AI footage composited under HyperFrames overlays. OpenAI-first, pluggable.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "stdio": "tsx src/index.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "probe": "node scripts/probe-openai.mjs",
+    "probe:full": "node scripts/probe-openai.mjs --image --video",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@vercel/blob": "^2.4.1",
+    "@vercel/sandbox": "^2.2.1",
+    "mcp-handler": "^1.1.0",
+    "next": "^16.2.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
