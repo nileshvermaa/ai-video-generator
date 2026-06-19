@@ -1,64 +1,59 @@
-# Reel MCP
+# Reel MCP — make AI videos from the Claude app
 
-Hybrid AI-video platform driven by **Claude Code over MCP**. AI-generated footage
-(OpenAI Sora-2) composited under **HyperFrames** HTML/GSAP overlays, narrated with
-OpenAI TTS and caption-synced via Whisper word timestamps. OpenAI-first, but every
-capability sits behind a pluggable adapter so any provider can drop in later.
+A remote **MCP server** (deployed on Vercel) that turns a text prompt into AI video,
+driven from the **Claude app on a tablet/phone** — no separate app or website.
+You chat with Claude, it calls this server, you get back a link to an MP4.
 
-There is **no app and no website** — you drive it through Claude Code; the MCP
-server is an invisible Node process. Output is an `.mp4`.
+Built with OpenAI (Sora-2 video, TTS, Whisper) behind a pluggable provider layer,
+inspired by the HyperFrames video pipeline.
 
-## Status: Phase 1 done — MCP server live
+> **Full docs & architecture:** see [`CLAUDE.md`](./CLAUDE.md).
 
-Phase 0 (key probe) ✅ and Phase 1 (MCP skeleton + OpenAI audio path) ✅.
-The server exposes 5 tools and produces real `narration.mp3` + word-timestamp
-`transcript.json` through the MCP path. Sora video is wired but dry-run by default.
+---
 
-**Tools:** `list_providers` · `create_project` · `generate_narration`
-(TTS → Whisper) · `generate_clip` (Sora-2, dry-run by default) · `get_job`.
+## What works today
 
-Next: Phase 0 render spike (one Sora clip under a HyperFrames overlay → MP4),
-then Phase 2 (real `generate_clip`).
+- `generate_clip` / `get_clip` — generate an AI video clip (Sora-2), get a public link
+- `generate_narration` — TTS voiceover + word-level transcript, as a link
+- `create_project`, `list_providers`
+- Secret-URL connector auth
 
-## Setup
+Next phase: **hybrid render** — footage + animated caption/overlays composited into one MP4 (Vercel Sandbox).
+
+## Set it up (one-time, ~5 min)
+
+In your **Vercel** project (repo is already connected — pushes auto-deploy):
+
+1. **Storage → Create → Blob**, link it to the project. (Sets `BLOB_READ_WRITE_TOKEN`.)
+2. **Settings → Environment Variables**, add:
+   - `OPENAI_API_KEY` — an OpenAI key **with Sora-2 access** (gated; verify with `npm run probe:full`)
+   - `MCP_SECRET` — a long random string (the connector URL embeds it)
+3. **Redeploy.**
+
+Your connector URL is: `https://<your-app>.vercel.app/<MCP_SECRET>/mcp`
+
+## Connect it to the Claude app
+
+Add the connector **on claude.ai in a browser** (it then syncs to the app):
+
+> Settings → Connectors → Add custom connector → name `Reel`, paste the URL above, auth **none**.
+
+## Use it from the tablet
+
+Open the Claude app, make sure the `Reel` connector is on, and ask:
+
+> *"Make an 8-second vertical clip of a neon city in the rain."*
+
+Claude generates it and replies with a link to tap. 🎬
+
+## Local development
 
 ```bash
-# 1. paste your OpenAI key:  edit .env  →  OPENAI_API_KEY=sk-...
-# 2. install + build
 npm install
-npm run build
-
-# Validation:
-npm run probe        # cheap: models + TTS + Whisper
-npm run probe:full   # also 1 image + 1 Sora job (real $$)
-npm run smoke        # drive the MCP server end-to-end (free/dry-run)
-npm run smoke -- --narrate   # + a tiny real narration (few cents)
+cp .env.example .env      # add OPENAI_API_KEY
+npm run smoke             # offline end-to-end test (no spend)
+npm run probe             # what can your OpenAI key reach?
+npm run build             # next build (validates the deployable app)
 ```
 
-## Connect it to Claude Code
-
-A project-scoped `.mcp.json` is included (used when you run `claude` from this
-folder). To use the server from any project, register it globally:
-
-```bash
-claude mcp add reel -- node F:/video-gen/dist/index.js
-```
-
-Then Claude Code can call `reel`'s tools directly. The server is an invisible
-stdio process — nothing to open.
-
-Requirements: Node 20+ (have it). `ffmpeg` needed from Phase 2 for clip
-stitching — not yet on PATH on this machine; install before then.
-
-## Roadmap
-
-| Phase | What |
-|---|---|
-| 0 | Probe key + prove hybrid render composites |
-| 1 | MCP skeleton + OpenAI audio (`create_project`, `generate_narration`, `list_providers`, `get_job`) |
-| 2 | Video generation (`generate_clip` via Sora-2, async jobs, cost guard) |
-| 3 | Hybrid compose (footage + overlays + audio synced to transcript) + lint/preview/render |
-| 4 | Long-form + multi-scene stitching, 16:9 templates |
-| 5 | Second provider adapter (de-risk Sora's Sept 2026 shutdown) |
-
-Full plan: see the architecture artifact shared in the planning session.
+See [`CLAUDE.md`](./CLAUDE.md) for the tool reference, env vars, serverless rules, roadmap, and gotchas.

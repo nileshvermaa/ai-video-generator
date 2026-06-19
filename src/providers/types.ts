@@ -1,6 +1,9 @@
 // The pluggability seam. Every AI capability sits behind this interface so any
 // provider (OpenAI today; Runway/Kling/ElevenLabs tomorrow) can drop in.
-// This is what protects us from OpenAI's Sora API deprecation (Sept 2026).
+//
+// SERVERLESS NOTE: providers are PURE — they return bytes (Buffer), never touch
+// the filesystem. The caller decides where to persist (Vercel Blob). This is
+// what lets the whole pipeline run on Vercel's read-only/ephemeral functions.
 
 export type Capability = "video" | "tts" | "transcribe" | "image";
 
@@ -9,13 +12,12 @@ export interface SpeechRequest {
   voice?: string;
 }
 export interface SpeechResult {
-  audioPath: string;
-  bytes: number;
+  audio: Buffer;
   model: string;
 }
 
 export interface TranscribeRequest {
-  audioPath: string;
+  audio: Buffer;
 }
 export interface Word {
   word: string;
@@ -33,7 +35,7 @@ export interface ImageRequest {
   aspect?: string;
 }
 export interface ImageResult {
-  assetPath: string;
+  image: Buffer;
 }
 
 export interface VideoRequest {
@@ -52,13 +54,15 @@ export interface Provider {
   id: string;
   capabilities: Record<Capability, boolean>;
 
-  generateSpeech?(req: SpeechRequest, outPath: string): Promise<SpeechResult>;
+  generateSpeech?(req: SpeechRequest): Promise<SpeechResult>;
   transcribe?(req: TranscribeRequest): Promise<TranscribeResult>;
-  generateImage?(req: ImageRequest, outPath: string): Promise<ImageResult>;
+  generateImage?(req: ImageRequest): Promise<ImageResult>;
 
-  // Video generation is async/long. createVideo kicks off a job; getVideo polls.
+  // Video generation is async/long. createVideo kicks off a job; getVideo polls;
+  // downloadVideo fetches the finished MP4 bytes.
   createVideo?(req: VideoRequest): Promise<VideoJobRef>;
   getVideo?(providerJobId: string): Promise<VideoJobRef>;
+  downloadVideo?(providerJobId: string): Promise<Buffer>;
   // Transparency: describe the exact request without spending money (dry-run).
   planVideo?(req: VideoRequest): { endpoint: string; method: string; body: unknown };
 }

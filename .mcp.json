@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "reel": {
-      "command": "node",
-      "args": ["F:/video-gen/dist/index.js"]
+    "reel-local": {
+      "command": "npx",
+      "args": ["-y", "tsx", "F:/video-gen/src/index.ts"]
     }
   }
 }

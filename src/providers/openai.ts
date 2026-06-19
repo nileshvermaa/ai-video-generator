@@ -1,7 +1,5 @@
-// OpenAI adapter — implements every capability with raw fetch (proven in the
-// Phase 0 probe). No SDK dependency, no surprises.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+// OpenAI adapter — implements every capability with raw fetch. Pure: returns
+// bytes, never writes to disk (serverless-safe).
 import { OPENAI_API_KEY, OPENAI_BASE_URL } from "../env";
 import type {
   Provider,
@@ -16,11 +14,11 @@ import type {
 } from "./types";
 
 function auth(): Record<string, string> {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set (put it in .env)");
+  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not set (set it in the Vercel project env)");
   return { Authorization: `Bearer ${OPENAI_API_KEY}` };
 }
 
-// gpt-image-1 supports a fixed set of sizes.
+// gpt-image-1 supported sizes.
 function aspectToImageSize(aspect = "1:1"): string {
   if (aspect === "9:16") return "1024x1536";
   if (aspect === "16:9") return "1536x1024";
@@ -36,7 +34,7 @@ export class OpenAIProvider implements Provider {
   id = "openai";
   capabilities = { video: true, tts: true, transcribe: true, image: true } as const;
 
-  async generateSpeech(req: SpeechRequest, outPath: string): Promise<SpeechResult> {
+  async generateSpeech(req: SpeechRequest): Promise<SpeechResult> {
     const model = "gpt-4o-mini-tts";
     const res = await fetch(`${OPENAI_BASE_URL}/audio/speech`, {
       method: "POST",
@@ -44,15 +42,12 @@ export class OpenAIProvider implements Provider {
       body: JSON.stringify({ model, input: req.text, voice: req.voice || "alloy", response_format: "mp3" }),
     });
     if (!res.ok) throw new Error(`TTS ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, buf);
-    return { audioPath: outPath, bytes: buf.length, model };
+    return { audio: Buffer.from(await res.arrayBuffer()), model };
   }
 
   async transcribe(req: TranscribeRequest): Promise<TranscribeResult> {
     const fd = new FormData();
-    fd.append("file", new Blob([readFileSync(req.audioPath)], { type: "audio/mpeg" }), "narration.mp3");
+    fd.append("file", new Blob([new Uint8Array(req.audio)], { type: "audio/mpeg" }), "narration.mp3");
     fd.append("model", "whisper-1");
     fd.append("response_format", "verbose_json");
     fd.append("timestamp_granularities[]", "word");
@@ -64,7 +59,7 @@ export class OpenAIProvider implements Provider {
     return { words, text: data.text || "", durationSec };
   }
 
-  async generateImage(req: ImageRequest, outPath: string): Promise<ImageResult> {
+  async generateImage(req: ImageRequest): Promise<ImageResult> {
     const res = await fetch(`${OPENAI_BASE_URL}/images/generations`, {
       method: "POST",
       headers: { ...auth(), "Content-Type": "application/json" },
@@ -74,9 +69,7 @@ export class OpenAIProvider implements Provider {
     const data: any = await res.json();
     const b64 = data.data?.[0]?.b64_json;
     if (!b64) throw new Error("Image: 200 OK but no b64_json in response");
-    mkdirSync(dirname(outPath), { recursive: true });
-    writeFileSync(outPath, Buffer.from(b64, "base64"));
-    return { assetPath: outPath };
+    return { image: Buffer.from(b64, "base64") };
   }
 
   planVideo(req: VideoRequest) {
@@ -106,5 +99,11 @@ export class OpenAIProvider implements Provider {
     if (!res.ok) throw new Error(`Sora get ${res.status}: ${text.slice(0, 300)}`);
     const data: any = JSON.parse(text);
     return { providerJobId, status: data.status, raw: data };
+  }
+
+  async downloadVideo(providerJobId: string): Promise<Buffer> {
+    const res = await fetch(`${OPENAI_BASE_URL}/videos/${providerJobId}/content`, { headers: auth() });
+    if (!res.ok) throw new Error(`Sora content ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    return Buffer.from(await res.arrayBuffer());
   }
 }

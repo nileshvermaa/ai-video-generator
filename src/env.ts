@@ -1,14 +1,19 @@
-// Environment + path anchoring for the Reel MCP server.
-// Anchored to the repo via import.meta.url (NOT cwd) — Claude Code may launch
-// the server from anywhere.
+// Config + logging. On Vercel, env vars come from the project settings; the
+// local .env loader below is a no-op there (file absent → caught).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const PROJECTS_DIR = join(ROOT, "projects");
+const ROOT = (() => {
+  try {
+    return join(dirname(fileURLToPath(import.meta.url)), "..");
+  } catch {
+    return process.cwd();
+  }
+})();
 
-// Tiny .env loader (no dependency) — mirrors scripts/probe-openai.mjs.
+// Tiny .env loader for LOCAL dev (no dependency). On Vercel this file doesn't
+// exist, so the read throws and is swallowed — real env vars win.
 function loadEnv(): void {
   try {
     const txt = readFileSync(join(ROOT, ".env"), "utf8");
@@ -17,7 +22,7 @@ function loadEnv(): void {
       if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
     }
   } catch {
-    /* no .env — rely on real environment */
+    /* no .env — rely on real environment (Vercel) */
   }
 }
 loadEnv();
@@ -25,7 +30,7 @@ loadEnv();
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 export const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 
-/** Logs MUST go to stderr — stdout is the MCP protocol channel. */
+/** Logs MUST go to stderr — stdout is the MCP protocol channel (stdio mode). */
 export function log(...args: unknown[]): void {
   console.error("[reel-mcp]", ...args);
 }

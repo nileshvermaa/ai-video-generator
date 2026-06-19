@@ -1,25 +1,22 @@
-// The MCP tool surface — what Claude Code calls to drive the platform.
-import { join } from "node:path";
-import { writeFileSync } from "node:fs";
+// The MCP tool surface — what Claude (in the tablet app) calls to drive the
+// pipeline. Stateless + serverless-safe: video state lives in OpenAI's own job
+// (polled by videoId), artifacts are delivered as public Vercel Blob URLs.
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getProvider, listProviders } from "./providers/registry";
-import { createProject, resolveProject, type Aspect } from "./core/projects";
-import { addJob, getJob, newJobId, updateJob } from "./core/jobs";
+import { makeProjectId, type Aspect } from "./core/projects";
+import { uploadBlob, blobConfigured } from "./core/blob";
 import { log } from "./env";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
-
 const ok = (data: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
 const fail = (msg: string): ToolResult => ({ content: [{ type: "text", text: `ERROR: ${msg}` }], isError: true });
 
-const TERMINAL = new Set(["completed", "failed", "dry-run"]);
-
 export function registerTools(server: McpServer): void {
-  // ── list_providers ────────────────────────────────────────────────────────
+  // ── list_providers ──────────────────────────────────────────────────────────
   server.tool(
     "list_providers",
-    "List the capability matrix: which provider handles video / tts / transcribe / image, and the active routing.",
+    "List which provider handles video / tts / transcribe / image, and the active routing.",
     {},
     async () => ok(listProviders())
   );
@@ -27,123 +24,87 @@ export function registerTools(server: McpServer): void {
   // ── create_project ──────────────────────────────────────────────────────────
   server.tool(
     "create_project",
-    "Scaffold a new video project folder (meta.json + audio/ assets/ clips/ out/ + empty script.txt). Returns the project id used by every other tool.",
+    "Start a video project. Returns a projectId (a label that groups this video's narration + clips). Pass it to the other tools.",
     {
-      title: z.string().describe("Human title; also the basis for the slug/id"),
-      aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16").describe("9:16 shorts, 16:9 long-form, 1:1 square"),
-      targetDurationSec: z.number().int().positive().max(900).default(30).describe("Target final video length in seconds"),
+      title: z.string().describe("Short human title for the video"),
+      aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16").describe("9:16 vertical (shorts), 16:9 landscape, 1:1 square"),
     },
-    async ({ title, aspect, targetDurationSec }) => {
-      try {
-        const { id, dir, meta } = createProject(title, aspect as Aspect, targetDurationSec, new Date().toISOString());
-        log("created project", id);
-        return ok({ projectId: id, dir, meta });
-      } catch (e: any) {
-        return fail(e?.message || String(e));
-      }
-    }
+    async ({ title, aspect }) => ok({ projectId: makeProjectId(title), title, aspect })
   );
 
-  // ── generate_narration ────────────────────────────────────────────────────
+  // ── generate_narration ──────────────────────────────────────────────────────
   server.tool(
     "generate_narration",
-    "Generate narration for a project: OpenAI TTS -> audio/narration.mp3, then Whisper -> transcript.json (word-level timestamps for caption sync). One call replaces TTS + transcribe.",
+    "Generate spoken narration (OpenAI TTS) and a word-level transcript (Whisper). Returns a public audio URL plus word timings (used later to sync captions).",
     {
-      projectId: z.string().describe("Project id from create_project"),
       script: z.string().describe("The narration text to speak"),
-      voice: z.string().default("alloy").describe("OpenAI TTS voice (alloy, echo, fable, onyx, nova, shimmer, ...)"),
+      voice: z.string().default("alloy").describe("OpenAI voice: alloy, echo, fable, onyx, nova, shimmer"),
+      projectId: z.string().optional().describe("From create_project; auto-generated if omitted"),
     },
-    async ({ projectId, script, voice }) => {
+    async ({ script, voice, projectId }) => {
       try {
-        const { dir } = resolveProject(projectId);
-        writeFileSync(join(dir, "script.txt"), script);
-
+        if (!blobConfigured()) return fail("Storage not configured — create a Vercel Blob store so BLOB_READ_WRITE_TOKEN is set.");
+        const pid = projectId || makeProjectId("narration");
         const tts = getProvider("tts");
         const stt = getProvider("transcribe");
-        const audioPath = join(dir, "audio", "narration.mp3");
-
-        const speech = await tts.generateSpeech!({ text: script, voice }, audioPath);
-        const tr = await stt.transcribe!({ audioPath });
-        const transcriptPath = join(dir, "transcript.json");
-        writeFileSync(transcriptPath, JSON.stringify(tr, null, 2));
-
-        log("narration", projectId, `${tr.words.length} words / ${tr.durationSec}s`);
-        return ok({
-          audioPath,
-          transcriptPath,
-          voice,
-          ttsModel: speech.model,
-          bytes: speech.bytes,
-          wordCount: tr.words.length,
-          durationSec: tr.durationSec,
-          firstWords: tr.words.slice(0, 5),
-        });
+        const speech = await tts.generateSpeech!({ text: script, voice });
+        const tr = await stt.transcribe!({ audio: speech.audio });
+        const audioUrl = await uploadBlob(`${pid}/narration.mp3`, speech.audio, "audio/mpeg");
+        const transcriptUrl = await uploadBlob(`${pid}/transcript.json`, JSON.stringify(tr), "application/json");
+        log("narration", pid, `${tr.words.length}w/${tr.durationSec}s`);
+        return ok({ projectId: pid, audioUrl, transcriptUrl, voice, ttsModel: speech.model, durationSec: tr.durationSec, wordCount: tr.words.length, words: tr.words });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }
     }
   );
 
-  // ── generate_clip ─────────────────────────────────────────────────────────
+  // ── generate_clip ───────────────────────────────────────────────────────────
   server.tool(
     "generate_clip",
-    "Generate AI footage (Sora-2) for a project. Returns a job id; poll get_job. SAFE BY DEFAULT: dryRun=true returns the exact request that WOULD be sent (no spend). Set dryRun=false to actually generate (costs real money).",
+    "Generate an AI video clip with OpenAI Sora-2. Asynchronous: returns a videoId — then call get_clip with it until status is 'completed'. COSTS MONEY per second of video.",
     {
-      projectId: z.string().describe("Project id from create_project"),
-      prompt: z.string().describe("Footage description for the video model"),
-      durationSec: z.number().int().min(1).max(20).default(4).describe("Clip length in seconds"),
-      aspect: z.enum(["9:16", "16:9", "1:1"]).optional().describe("Defaults to the project aspect"),
-      dryRun: z.boolean().default(true).describe("true = no spend, just show the planned request"),
+      prompt: z.string().describe("What the footage should show"),
+      seconds: z.number().int().min(1).max(12).default(8).describe("Clip length (1-12s)"),
+      aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16"),
+      projectId: z.string().optional(),
+      dryRun: z.boolean().default(false).describe("true = show the exact request without spending money"),
     },
-    async ({ projectId, prompt, durationSec, aspect, dryRun }) => {
+    async ({ prompt, seconds, aspect, projectId, dryRun }) => {
       try {
-        const { meta } = resolveProject(projectId);
         const provider = getProvider("video");
-        const req = { prompt, durationSec, aspect: (aspect as Aspect) || meta.aspect };
-        const jobId = newJobId();
-
-        if (dryRun) {
-          const plan = provider.planVideo!(req);
-          const job = addJob({ id: jobId, type: "video", projectId, status: "dry-run", providerId: provider.id, request: req, result: { plan } });
-          return ok({ jobId, status: job.status, dryRun: true, plan, note: "No money spent. Re-call with dryRun=false to generate." });
-        }
-
+        const req = { prompt, durationSec: seconds, aspect: aspect as Aspect };
+        if (dryRun) return ok({ dryRun: true, plan: provider.planVideo!(req), note: "No money spent." });
         const ref = await provider.createVideo!(req);
-        const job = addJob({
-          id: jobId,
-          type: "video",
-          projectId,
-          status: "in_progress",
-          providerId: provider.id,
-          providerJobId: ref.providerJobId,
-          request: req,
-          result: ref.raw,
-        });
-        log("video job created", jobId, ref.providerJobId, ref.status);
-        return ok({ jobId, status: job.status, providerJobId: ref.providerJobId, note: "Generating. Poll get_job until completed." });
+        log("clip created", ref.providerJobId, ref.status);
+        return ok({ videoId: ref.providerJobId, status: ref.status, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }
     }
   );
 
-  // ── get_job ─────────────────────────────────────────────────────────────────
+  // ── get_clip ────────────────────────────────────────────────────────────────
   server.tool(
-    "get_job",
-    "Poll a long-running job (e.g. video generation). Refreshes status from the provider when the job isn't terminal yet.",
-    { jobId: z.string().describe("Job id from generate_clip") },
-    async ({ jobId }) => {
+    "get_clip",
+    "Check a Sora-2 video job. While running, returns its status. When completed, downloads the MP4 and returns a public URL to watch/download on any device.",
+    {
+      videoId: z.string().describe("The videoId from generate_clip"),
+      projectId: z.string().optional(),
+    },
+    async ({ videoId, projectId }) => {
       try {
-        const job = getJob(jobId);
-        if (!job) return fail(`Job "${jobId}" not found`);
-
-        if (job.type === "video" && job.providerJobId && !TERMINAL.has(job.status)) {
-          const provider = getProvider("video", job.providerId);
-          const ref = await provider.getVideo!(job.providerJobId);
-          const status = ref.status === "completed" ? "completed" : ref.status === "failed" ? "failed" : "in_progress";
-          updateJob(jobId, { status, result: ref.raw });
+        const provider = getProvider("video");
+        const ref = await provider.getVideo!(videoId);
+        if (ref.status !== "completed") {
+          const progress = (ref.raw as any)?.progress;
+          return ok({ videoId, status: ref.status, progress, note: "Not done yet — call get_clip again in ~10s." });
         }
-        return ok(getJob(jobId));
+        if (!blobConfigured()) return fail("Video is ready but storage isn't configured — create a Vercel Blob store (sets BLOB_READ_WRITE_TOKEN).");
+        const bytes = await provider.downloadVideo!(videoId);
+        const videoUrl = await uploadBlob(`${projectId || "clips"}/${videoId}.mp4`, bytes, "video/mp4");
+        log("clip done", videoId, `${bytes.length}b`);
+        return ok({ videoId, status: "completed", videoUrl, bytes: bytes.length, note: "Open videoUrl to watch or download." });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }
