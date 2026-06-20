@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getProvider, listProviders } from "./providers/registry";
 import { makeProjectId, type Aspect } from "./core/projects";
 import { uploadBlob, blobConfigured } from "./core/blob";
-import { getLatestUploadBytes, fetchImageBytes } from "./core/uploads";
+import { listPhotos, resolvePhotoBytes, getLatestPhotoBytes, fetchImageBytes } from "./core/uploads";
 import { resizeToVideo, videoSize } from "./core/images";
 import { log } from "./env";
 
@@ -64,36 +64,56 @@ export function registerTools(server: McpServer): void {
   // ── generate_clip ───────────────────────────────────────────────────────────
   server.tool(
     "generate_clip",
-    "Generate an AI video clip with OpenAI Sora-2 (great for Instagram Reels). Async: returns a videoId — poll get_clip until 'completed'. To make a reel STARRING the user, set useMyPhoto:true to animate the selfie they uploaded at the connector's /upload page (image-to-video). COSTS MONEY per second of video.",
+    "Generate an AI video clip with OpenAI Sora-2 (great for Instagram Reels). Async: returns a videoId — poll get_clip until 'completed'. To make a reel STARRING the user, animate one of their uploaded photos: set photoName for a specific one (call list_photos to see names), or useMyPhoto:true for their most recent upload. COSTS MONEY per second of video.",
     {
       prompt: z.string().describe("The action/scene. For a selfie reel, describe what the PERSON does, e.g. 'the person dances energetically in Times Square at night, neon lights, handheld vertical reel'."),
       seconds: z.number().int().min(1).max(12).default(8).describe("Clip length (1-12s)"),
       aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16").describe("9:16 for Instagram Reels / vertical"),
-      useMyPhoto: z.boolean().default(false).describe("true = animate the photo the user uploaded at the /upload page (image-to-video). Use this when the user wants a reel of themselves."),
-      imageUrl: z.string().optional().describe("A public image URL to animate instead of the uploaded photo"),
+      photoName: z.string().optional().describe("Animate a specific uploaded photo by name (e.g. 'beach'). See list_photos for available names."),
+      useMyPhoto: z.boolean().default(false).describe("true = animate the user's MOST RECENT uploaded photo (when no specific photoName is given)."),
+      imageUrl: z.string().optional().describe("A public image URL to animate instead of an uploaded photo"),
       projectId: z.string().optional(),
       dryRun: z.boolean().default(false).describe("true = show what would happen without spending money"),
     },
-    async ({ prompt, seconds, aspect, useMyPhoto, imageUrl, projectId, dryRun }) => {
+    async ({ prompt, seconds, aspect, photoName, useMyPhoto, imageUrl, projectId, dryRun }) => {
       try {
         const provider = getProvider("video");
         const req = { prompt, durationSec: seconds, aspect: aspect as Aspect };
 
         let imageBytes: Buffer | undefined;
-        if (useMyPhoto || imageUrl) {
-          const raw = useMyPhoto ? await getLatestUploadBytes() : await fetchImageBytes(imageUrl!);
+        if (photoName || useMyPhoto || imageUrl) {
+          let raw: Buffer | null;
+          if (photoName) raw = await resolvePhotoBytes(photoName);
+          else if (useMyPhoto) raw = await getLatestPhotoBytes();
+          else raw = await fetchImageBytes(imageUrl!);
           if (!raw) {
-            return fail("No uploaded photo found. Open the upload page (your connector URL with /upload instead of /mcp), upload a photo, then try again.");
+            const names = (await listPhotos()).map((p) => p.name);
+            return fail(`Photo not found.${names.length ? ` Available photos: ${names.join(", ")}.` : " No photos uploaded yet — upload one at the /upload page."}`);
           }
           imageBytes = await resizeToVideo(raw, req.aspect);
         }
 
         const mode = imageBytes ? "image-to-video" : "text-to-video";
-        if (dryRun) return ok({ dryRun: true, mode, size: videoSize(req.aspect).size, prompt, seconds, note: "No money spent." });
+        if (dryRun) return ok({ dryRun: true, mode, photo: photoName || (useMyPhoto ? "latest" : null), size: videoSize(req.aspect).size, prompt, seconds, note: "No money spent." });
 
         const ref = await provider.createVideo!(req, imageBytes);
         log("clip created", mode, ref.providerJobId, ref.status);
         return ok({ videoId: ref.providerJobId, status: ref.status, mode, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
+      } catch (e: any) {
+        return fail(e?.message || String(e));
+      }
+    }
+  );
+
+  // ── list_photos ─────────────────────────────────────────────────────────────
+  server.tool(
+    "list_photos",
+    "List the photos the user has uploaded (by name) that can be animated into reels via generate_clip.",
+    {},
+    async () => {
+      try {
+        const photos = await listPhotos();
+        return ok({ count: photos.length, photos: photos.map((p) => ({ name: p.name, uploadedAt: p.uploadedAt })) });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }

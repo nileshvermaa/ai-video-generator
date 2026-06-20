@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   return Response.json({
     commit: process.env.VERCEL_GIT_COMMIT_SHA || "local",
-    marker: "i2v-upload-v3",
+    marker: "photo-library-v4",
     mcpSecretSet: !!process.env.MCP_SECRET,
     blobConfigured: !!process.env.BLOB_READ_WRITE_TOKEN,
   });
