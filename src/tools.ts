@@ -6,6 +6,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getProvider, listProviders } from "./providers/registry";
 import { makeProjectId, type Aspect } from "./core/projects";
 import { uploadBlob, blobConfigured } from "./core/blob";
+import { getLatestUploadBytes, fetchImageBytes } from "./core/uploads";
+import { resizeToVideo, videoSize } from "./core/images";
 import { log } from "./env";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -62,22 +64,36 @@ export function registerTools(server: McpServer): void {
   // ── generate_clip ───────────────────────────────────────────────────────────
   server.tool(
     "generate_clip",
-    "Generate an AI video clip with OpenAI Sora-2. Asynchronous: returns a videoId — then call get_clip with it until status is 'completed'. COSTS MONEY per second of video.",
+    "Generate an AI video clip with OpenAI Sora-2 (great for Instagram Reels). Async: returns a videoId — poll get_clip until 'completed'. To make a reel STARRING the user, set useMyPhoto:true to animate the selfie they uploaded at the connector's /upload page (image-to-video). COSTS MONEY per second of video.",
     {
-      prompt: z.string().describe("What the footage should show"),
+      prompt: z.string().describe("The action/scene. For a selfie reel, describe what the PERSON does, e.g. 'the person dances energetically in Times Square at night, neon lights, handheld vertical reel'."),
       seconds: z.number().int().min(1).max(12).default(8).describe("Clip length (1-12s)"),
-      aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16"),
+      aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16").describe("9:16 for Instagram Reels / vertical"),
+      useMyPhoto: z.boolean().default(false).describe("true = animate the photo the user uploaded at the /upload page (image-to-video). Use this when the user wants a reel of themselves."),
+      imageUrl: z.string().optional().describe("A public image URL to animate instead of the uploaded photo"),
       projectId: z.string().optional(),
-      dryRun: z.boolean().default(false).describe("true = show the exact request without spending money"),
+      dryRun: z.boolean().default(false).describe("true = show what would happen without spending money"),
     },
-    async ({ prompt, seconds, aspect, projectId, dryRun }) => {
+    async ({ prompt, seconds, aspect, useMyPhoto, imageUrl, projectId, dryRun }) => {
       try {
         const provider = getProvider("video");
         const req = { prompt, durationSec: seconds, aspect: aspect as Aspect };
-        if (dryRun) return ok({ dryRun: true, plan: provider.planVideo!(req), note: "No money spent." });
-        const ref = await provider.createVideo!(req);
-        log("clip created", ref.providerJobId, ref.status);
-        return ok({ videoId: ref.providerJobId, status: ref.status, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
+
+        let imageBytes: Buffer | undefined;
+        if (useMyPhoto || imageUrl) {
+          const raw = useMyPhoto ? await getLatestUploadBytes() : await fetchImageBytes(imageUrl!);
+          if (!raw) {
+            return fail("No uploaded photo found. Open the upload page (your connector URL with /upload instead of /mcp), upload a photo, then try again.");
+          }
+          imageBytes = await resizeToVideo(raw, req.aspect);
+        }
+
+        const mode = imageBytes ? "image-to-video" : "text-to-video";
+        if (dryRun) return ok({ dryRun: true, mode, size: videoSize(req.aspect).size, prompt, seconds, note: "No money spent." });
+
+        const ref = await provider.createVideo!(req, imageBytes);
+        log("clip created", mode, ref.providerJobId, ref.status);
+        return ok({ videoId: ref.providerJobId, status: ref.status, mode, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }

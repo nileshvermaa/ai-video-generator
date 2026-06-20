@@ -59,8 +59,9 @@ export interface Provider {
   generateImage?(req: ImageRequest): Promise<ImageResult>;
 
   // Video generation is async/long. createVideo kicks off a job; getVideo polls;
-  // downloadVideo fetches the finished MP4 bytes.
-  createVideo?(req: VideoRequest): Promise<VideoJobRef>;
+  // downloadVideo fetches the finished MP4 bytes. Pass imageBytes (already sized
+  // to the target) for image-to-video.
+  createVideo?(req: VideoRequest, imageBytes?: Buffer): Promise<VideoJobRef>;
   getVideo?(providerJobId: string): Promise<VideoJobRef>;
   downloadVideo?(providerJobId: string): Promise<Buffer>;
   // Transparency: describe the exact request without spending money (dry-run).

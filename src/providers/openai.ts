@@ -83,13 +83,26 @@ export class OpenAIProvider implements Provider {
     };
   }
 
-  async createVideo(req: VideoRequest): Promise<VideoJobRef> {
-    const plan = this.planVideo(req);
-    const res = await fetch(plan.endpoint, {
-      method: "POST",
-      headers: { ...(await authHeaders()), "Content-Type": "application/json" },
-      body: JSON.stringify(plan.body),
-    });
+  async createVideo(req: VideoRequest, imageBytes?: Buffer): Promise<VideoJobRef> {
+    const size = aspectToVideoSize(req.aspect);
+    let res: Response;
+    if (imageBytes) {
+      // Image-to-video: multipart with input_reference (image must match size).
+      const fd = new FormData();
+      fd.append("model", "sora-2");
+      fd.append("prompt", req.prompt);
+      fd.append("seconds", String(req.durationSec));
+      fd.append("size", size);
+      fd.append("input_reference", new Blob([new Uint8Array(imageBytes)], { type: "image/jpeg" }), "reference.jpg");
+      res = await fetch(`${OPENAI_BASE_URL}/videos`, { method: "POST", headers: await authHeaders(), body: fd });
+    } else {
+      // Text-to-video: JSON.
+      res = await fetch(`${OPENAI_BASE_URL}/videos`, {
+        method: "POST",
+        headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "sora-2", prompt: req.prompt, seconds: String(req.durationSec), size }),
+      });
+    }
     const text = await res.text();
     if (!res.ok) throw new Error(`Sora create ${res.status}: ${text.slice(0, 300)}`);
     const data: any = JSON.parse(text);
