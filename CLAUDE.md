@@ -51,8 +51,10 @@ Claude app (tablet)  ──custom connector──▶  Vercel
 | `list_providers` | — | capability/routing matrix |
 | `create_project` | `title`, `aspect` | `projectId` (groups artifacts under one Blob prefix) |
 | `generate_narration` | `script`, `voice?`, `projectId?` | `audioUrl`, `transcriptUrl`, word timings |
-| `generate_clip` | `prompt`, `seconds?`, `aspect?`, `projectId?`, `dryRun?` | `videoId` (async) |
+| `generate_clip` | `prompt`, `seconds?`, `aspect?`, `useMyPhoto?`, `imageUrl?`, `dryRun?` | `videoId` (async) |
 | `get_clip` | `videoId`, `projectId?` | status; when done, public `videoUrl` |
+
+**Reels (selfie → video, image-to-video):** the user uploads a photo at `/<MCP_SECRET>/upload` (stored as the latest reference in Blob, since Claude can't forward an in-app attachment's bytes to a tool). Then `generate_clip(useMyPhoto: true, prompt: "...")` fetches that photo, resizes it to 720×1280 with `sharp` (`src/core/images.ts`), and sends it as Sora's `input_reference` (multipart). `imageUrl` does the same for a public URL. Sora requires the reference to exactly match the video size — that's why we resize. iPhone HEIC isn't supported by sharp here; users export as JPEG.
 
 `dryRun: true` on `generate_clip` returns the exact request without spending — use it to test wiring.
 

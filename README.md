@@ -37,6 +37,14 @@ Add the connector **on claude.ai in a browser** (it then syncs to the app):
 
 > Settings → Connectors → Add custom connector → name `Reel`, paste the URL above, auth **none**.
 
+## Make a reel of yourself (image-to-video)
+
+1. Open `https://<your-app>.vercel.app/<MCP_SECRET>/upload` on the tablet and upload a clear photo (JPEG/PNG/WebP).
+2. In the Claude app: *"Use Reel to make an 8-second vertical reel of me dancing in Times Square at night."*
+3. Claude animates your photo (Sora image-to-video) and returns a link.
+
+Re-upload any time to change the photo — each reel uses the most recent one.
+
 ## Use it from the tablet
 
 Open the Claude app, make sure the `Reel` connector is on, and ask:
