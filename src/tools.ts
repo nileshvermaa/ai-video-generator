@@ -24,6 +24,50 @@ const STYLE_PRESETS: Record<string, string> = {
   cinematic: "Cinematic look, shallow depth of field, dramatic directional lighting, smooth deliberate camera motion, subtle film grain, color-graded.",
 };
 
+// Shared clip creation used by generate_clip (full control) and make_reel (one-tap).
+type ClipArgs = {
+  prompt: string;
+  seconds: number;
+  aspect: Aspect;
+  quality: "standard" | "high";
+  style?: string;
+  photoName?: string;
+  useMyPhoto: boolean;
+  imageUrl?: string;
+  dryRun: boolean;
+};
+
+async function createClip(a: ClipArgs): Promise<ToolResult> {
+  try {
+    const provider = getProvider("video");
+    const finalPrompt = a.style && STYLE_PRESETS[a.style] ? `${a.prompt}. ${STYLE_PRESETS[a.style]}` : a.prompt;
+    const req = { prompt: finalPrompt, durationSec: a.seconds, aspect: a.aspect, quality: a.quality };
+
+    let imageBytes: Buffer | undefined;
+    if (a.photoName || a.useMyPhoto || a.imageUrl) {
+      let raw: Buffer | null;
+      if (a.photoName) raw = await resolvePhotoBytes(a.photoName);
+      else if (a.useMyPhoto) raw = await getLatestPhotoBytes();
+      else raw = await fetchImageBytes(a.imageUrl!);
+      if (!raw) {
+        const names = (await listPhotos()).map((p) => p.name);
+        return fail(`Photo not found.${names.length ? ` Available photos: ${names.join(", ")}.` : " No photos uploaded yet — upload one at the /upload page."}`);
+      }
+      imageBytes = await resizeToVideo(raw, a.aspect, a.quality);
+    }
+
+    const mode = imageBytes ? "image-to-video" : "text-to-video";
+    if (a.dryRun) {
+      return ok({ dryRun: true, mode, model: videoModel(a.quality), size: videoSize(a.aspect, a.quality).size, style: a.style || null, photo: a.photoName || (a.useMyPhoto ? "latest" : null), seconds: a.seconds, note: "No money spent." });
+    }
+    const ref = await provider.createVideo!(req, imageBytes);
+    log("clip created", mode, videoModel(a.quality), ref.providerJobId, ref.status);
+    return ok({ videoId: ref.providerJobId, status: ref.status, mode, model: videoModel(a.quality), size: videoSize(a.aspect, a.quality).size, note: "Poll get_clip with this videoId every ~10s until status=completed." });
+  } catch (e: any) {
+    return fail(e?.message || String(e));
+  }
+}
+
 export function registerTools(server: McpServer): void {
   // ── list_providers ──────────────────────────────────────────────────────────
   server.tool(
@@ -84,40 +128,23 @@ export function registerTools(server: McpServer): void {
       photoName: z.string().optional().describe("Animate a specific uploaded photo by name (see list_photos)."),
       useMyPhoto: z.boolean().default(false).describe("true = animate the user's MOST RECENT uploaded photo."),
       imageUrl: z.string().optional().describe("A public image URL to animate instead of an uploaded photo"),
-      projectId: z.string().optional(),
       dryRun: z.boolean().default(false).describe("true = show what would happen without spending money"),
     },
-    async ({ prompt, seconds, aspect, quality, style, photoName, useMyPhoto, imageUrl, projectId, dryRun }) => {
-      try {
-        const provider = getProvider("video");
-        const finalPrompt = style && STYLE_PRESETS[style] ? `${prompt}. ${STYLE_PRESETS[style]}` : prompt;
-        const req = { prompt: finalPrompt, durationSec: seconds, aspect: aspect as Aspect, quality };
+    async ({ prompt, seconds, aspect, quality, style, photoName, useMyPhoto, imageUrl, dryRun }) =>
+      createClip({ prompt, seconds, aspect: aspect as Aspect, quality, style, photoName, useMyPhoto, imageUrl, dryRun })
+  );
 
-        let imageBytes: Buffer | undefined;
-        if (photoName || useMyPhoto || imageUrl) {
-          let raw: Buffer | null;
-          if (photoName) raw = await resolvePhotoBytes(photoName);
-          else if (useMyPhoto) raw = await getLatestPhotoBytes();
-          else raw = await fetchImageBytes(imageUrl!);
-          if (!raw) {
-            const names = (await listPhotos()).map((p) => p.name);
-            return fail(`Photo not found.${names.length ? ` Available photos: ${names.join(", ")}.` : " No photos uploaded yet — upload one at the /upload page."}`);
-          }
-          imageBytes = await resizeToVideo(raw, req.aspect, quality);
-        }
-
-        const mode = imageBytes ? "image-to-video" : "text-to-video";
-        if (dryRun) {
-          return ok({ dryRun: true, mode, model: videoModel(quality), size: videoSize(req.aspect, quality).size, style: style || null, photo: photoName || (useMyPhoto ? "latest" : null), seconds, note: "No money spent." });
-        }
-
-        const ref = await provider.createVideo!(req, imageBytes);
-        log("clip created", mode, videoModel(quality), ref.providerJobId, ref.status);
-        return ok({ videoId: ref.providerJobId, status: ref.status, mode, model: videoModel(quality), size: videoSize(req.aspect, quality).size, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
-      } catch (e: any) {
-        return fail(e?.message || String(e));
-      }
-    }
+  // ── make_reel (one-tap) ─────────────────────────────────────────────────────
+  server.tool(
+    "make_reel",
+    "One-tap Instagram Reel of the user — the EASY default for 'make a reel of me ...'. Give a plain description; it uses the user's photo (most recent, or photoName), brand quality (sora-2-pro), authentic UGC style, 8s, 9:16. Returns a videoId — then poll get_clip until completed.",
+    {
+      description: z.string().describe("Plain description: what the person does + setting, e.g. 'holding the serum, smiling, sunlit bathroom'."),
+      photoName: z.string().optional().describe("Specific uploaded photo (see list_photos). Omit to use the most recent."),
+      seconds: z.number().int().min(1).max(12).default(8),
+    },
+    async ({ description, photoName, seconds }) =>
+      createClip({ prompt: description, seconds, aspect: "9:16", quality: "high", style: "ugc", photoName, useMyPhoto: !photoName, dryRun: false })
   );
 
   // ── list_photos ─────────────────────────────────────────────────────────────
@@ -140,10 +167,9 @@ export function registerTools(server: McpServer): void {
     "get_clip",
     "Check a Sora-2 video job. While running, returns its status. When completed, downloads the MP4 and returns a public URL to watch/download on any device.",
     {
-      videoId: z.string().describe("The videoId from generate_clip"),
-      projectId: z.string().optional(),
+      videoId: z.string().describe("The videoId from generate_clip / make_reel"),
     },
-    async ({ videoId, projectId }) => {
+    async ({ videoId }) => {
       try {
         const provider = getProvider("video");
         const ref = await provider.getVideo!(videoId);
@@ -153,9 +179,9 @@ export function registerTools(server: McpServer): void {
         }
         if (!blobConfigured()) return fail("Video is ready but storage isn't configured — create a Vercel Blob store (sets BLOB_READ_WRITE_TOKEN).");
         const bytes = await provider.downloadVideo!(videoId);
-        const videoUrl = await uploadBlob(`${projectId || "clips"}/${videoId}.mp4`, bytes, "video/mp4");
+        const videoUrl = await uploadBlob(`reels/${videoId}.mp4`, bytes, "video/mp4");
         log("clip done", videoId, `${bytes.length}b`);
-        return ok({ videoId, status: "completed", videoUrl, bytes: bytes.length, note: "Open videoUrl to watch or download." });
+        return ok({ videoId, status: "completed", videoUrl, bytes: bytes.length, note: "Open videoUrl to watch or download. Also saved in My Reels (/reels)." });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }
