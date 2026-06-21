@@ -51,7 +51,7 @@ Claude app (tablet)  ──custom connector──▶  Vercel
 | `list_providers` | — | capability/routing matrix |
 | `create_project` | `title`, `aspect` | `projectId` (groups artifacts under one Blob prefix) |
 | `generate_narration` | `script`, `voice?`, `projectId?` | `audioUrl`, `transcriptUrl`, word timings |
-| `generate_clip` | `prompt`, `seconds?`, `aspect?`, `photoName?`, `useMyPhoto?`, `imageUrl?`, `dryRun?` | `videoId` (async) |
+| `generate_clip` | `prompt`, `seconds?`, `aspect?`, `quality?`, `style?`, `photoName?`, `useMyPhoto?`, `imageUrl?`, `dryRun?` | `videoId` (async) |
 | `list_photos` | — | names of uploaded photos |
 | `get_clip` | `videoId`, `projectId?` | status; when done, public `videoUrl` |
 
