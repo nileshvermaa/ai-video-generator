@@ -142,9 +142,10 @@ export function registerTools(server: McpServer): void {
       description: z.string().describe("Plain description: what the person does + setting, e.g. 'holding the serum, smiling, sunlit bathroom'."),
       photoName: z.string().optional().describe("Specific uploaded photo (see list_photos). Omit to use the most recent."),
       seconds: z.number().int().min(1).max(12).default(8),
+      dryRun: z.boolean().default(false).describe("true = preview the plan without spending money"),
     },
-    async ({ description, photoName, seconds }) =>
-      createClip({ prompt: description, seconds, aspect: "9:16", quality: "high", style: "ugc", photoName, useMyPhoto: !photoName, dryRun: false })
+    async ({ description, photoName, seconds, dryRun }) =>
+      createClip({ prompt: description, seconds, aspect: "9:16", quality: "high", style: "ugc", photoName, useMyPhoto: !photoName, dryRun })
   );
 
   // ── list_photos ─────────────────────────────────────────────────────────────
