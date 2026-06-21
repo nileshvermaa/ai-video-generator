@@ -7,12 +7,22 @@ import { getProvider, listProviders } from "./providers/registry";
 import { makeProjectId, type Aspect } from "./core/projects";
 import { uploadBlob, blobConfigured } from "./core/blob";
 import { listPhotos, resolvePhotoBytes, getLatestPhotoBytes, fetchImageBytes } from "./core/uploads";
-import { resizeToVideo, videoSize } from "./core/images";
+import { resizeToVideo } from "./core/images";
+import { videoModel, videoSize } from "./core/sizes";
 import { log } from "./env";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 const ok = (data: unknown): ToolResult => ({ content: [{ type: "text", text: JSON.stringify(data, null, 2) }] });
 const fail = (msg: string): ToolResult => ({ content: [{ type: "text", text: `ERROR: ${msg}` }], isError: true });
+
+// Proven look presets appended to the prompt. "ugc" is the workhorse for brand
+// collabs that should read as an authentic creator, not an AI render.
+const STYLE_PRESETS: Record<string, string> = {
+  ugc: "Authentic Instagram UGC reel shot on a smartphone, natural handheld camera with subtle real movement, candid real-person energy, soft natural lighting, true-to-life skin tones and textures, not overly polished or glossy.",
+  studio: "Polished branded content with soft studio key lighting, clean flattering look, crisp focus, professional color grade, premium feel.",
+  product: "Brand product showcase: the product clearly featured and in sharp focus, clean uncluttered background, soft flattering light, premium commercial look.",
+  cinematic: "Cinematic look, shallow depth of field, dramatic directional lighting, smooth deliberate camera motion, subtle film grain, color-graded.",
+};
 
 export function registerTools(server: McpServer): void {
   // ── list_providers ──────────────────────────────────────────────────────────
@@ -64,21 +74,24 @@ export function registerTools(server: McpServer): void {
   // ── generate_clip ───────────────────────────────────────────────────────────
   server.tool(
     "generate_clip",
-    "Generate an AI video clip with OpenAI Sora-2 (great for Instagram Reels). Async: returns a videoId — poll get_clip until 'completed'. To make a reel STARRING the user, animate one of their uploaded photos: set photoName for a specific one (call list_photos to see names), or useMyPhoto:true for their most recent upload. COSTS MONEY per second of video.",
+    "Generate an AI video clip with OpenAI Sora (Instagram Reels / brand UGC). Async: returns a videoId — poll get_clip until 'completed'. Animate one of the user's photos with photoName (see list_photos) or useMyPhoto:true. quality 'high' = sora-2-pro at 1024x1792 (crisp, survives Instagram compression; pricier) — default, use for brand work. style applies a proven look — use 'ugc' for brand collabs that should look like an authentic creator, not AI. COSTS MONEY per second.",
     {
-      prompt: z.string().describe("The action/scene. For a selfie reel, describe what the PERSON does, e.g. 'the person dances energetically in Times Square at night, neon lights, handheld vertical reel'."),
+      prompt: z.string().describe("The action/scene. Describe what the PERSON does + setting, e.g. 'the person walks toward camera holding the product, smiling, sunlit street'."),
       seconds: z.number().int().min(1).max(12).default(8).describe("Clip length (1-12s)"),
       aspect: z.enum(["9:16", "16:9", "1:1"]).default("9:16").describe("9:16 for Instagram Reels / vertical"),
-      photoName: z.string().optional().describe("Animate a specific uploaded photo by name (e.g. 'beach'). See list_photos for available names."),
-      useMyPhoto: z.boolean().default(false).describe("true = animate the user's MOST RECENT uploaded photo (when no specific photoName is given)."),
+      quality: z.enum(["standard", "high"]).default("high").describe("'high' = sora-2-pro 1024x1792 (brand quality, crisp on IG, costs more). 'standard' = sora-2 720x1280 (cheap draft)."),
+      style: z.enum(["ugc", "studio", "product", "cinematic"]).optional().describe("Look preset. 'ugc' = authentic handheld creator (best for brand collabs). 'studio'/'product' = polished/commercial. 'cinematic' = filmic."),
+      photoName: z.string().optional().describe("Animate a specific uploaded photo by name (see list_photos)."),
+      useMyPhoto: z.boolean().default(false).describe("true = animate the user's MOST RECENT uploaded photo."),
       imageUrl: z.string().optional().describe("A public image URL to animate instead of an uploaded photo"),
       projectId: z.string().optional(),
       dryRun: z.boolean().default(false).describe("true = show what would happen without spending money"),
     },
-    async ({ prompt, seconds, aspect, photoName, useMyPhoto, imageUrl, projectId, dryRun }) => {
+    async ({ prompt, seconds, aspect, quality, style, photoName, useMyPhoto, imageUrl, projectId, dryRun }) => {
       try {
         const provider = getProvider("video");
-        const req = { prompt, durationSec: seconds, aspect: aspect as Aspect };
+        const finalPrompt = style && STYLE_PRESETS[style] ? `${prompt}. ${STYLE_PRESETS[style]}` : prompt;
+        const req = { prompt: finalPrompt, durationSec: seconds, aspect: aspect as Aspect, quality };
 
         let imageBytes: Buffer | undefined;
         if (photoName || useMyPhoto || imageUrl) {
@@ -90,15 +103,17 @@ export function registerTools(server: McpServer): void {
             const names = (await listPhotos()).map((p) => p.name);
             return fail(`Photo not found.${names.length ? ` Available photos: ${names.join(", ")}.` : " No photos uploaded yet — upload one at the /upload page."}`);
           }
-          imageBytes = await resizeToVideo(raw, req.aspect);
+          imageBytes = await resizeToVideo(raw, req.aspect, quality);
         }
 
         const mode = imageBytes ? "image-to-video" : "text-to-video";
-        if (dryRun) return ok({ dryRun: true, mode, photo: photoName || (useMyPhoto ? "latest" : null), size: videoSize(req.aspect).size, prompt, seconds, note: "No money spent." });
+        if (dryRun) {
+          return ok({ dryRun: true, mode, model: videoModel(quality), size: videoSize(req.aspect, quality).size, style: style || null, photo: photoName || (useMyPhoto ? "latest" : null), seconds, note: "No money spent." });
+        }
 
         const ref = await provider.createVideo!(req, imageBytes);
-        log("clip created", mode, ref.providerJobId, ref.status);
-        return ok({ videoId: ref.providerJobId, status: ref.status, mode, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
+        log("clip created", mode, videoModel(quality), ref.providerJobId, ref.status);
+        return ok({ videoId: ref.providerJobId, status: ref.status, mode, model: videoModel(quality), size: videoSize(req.aspect, quality).size, projectId: projectId || null, note: "Poll get_clip with this videoId every ~10s until status=completed." });
       } catch (e: any) {
         return fail(e?.message || String(e));
       }

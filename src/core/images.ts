@@ -1,18 +1,14 @@
 // Sora image-to-video requires the reference image to EXACTLY match the video
-// size (720x1280 or 1280x720). We cover-crop the user's photo to that size.
+// size. We cover-crop the user's photo to that size (model/quality dependent).
 import sharp from "sharp";
 import type { Aspect } from "./projects";
+import { videoSize, type Quality } from "./sizes";
 
-export function videoSize(aspect: Aspect): { w: number; h: number; size: string } {
-  if (aspect === "16:9") return { w: 1280, h: 720, size: "1280x720" };
-  return { w: 720, h: 1280, size: "720x1280" }; // 9:16 (and 1:1 fallback) — reels
-}
-
-export async function resizeToVideo(bytes: Buffer, aspect: Aspect): Promise<Buffer> {
-  const { w, h } = videoSize(aspect);
+export async function resizeToVideo(bytes: Buffer, aspect: Aspect, quality: Quality = "high"): Promise<Buffer> {
+  const { w, h } = videoSize(aspect, quality);
   return await sharp(bytes)
     .rotate() // respect EXIF orientation (phone photos)
     .resize(w, h, { fit: "cover", position: "attention" }) // crop to fill, keep the face
-    .jpeg({ quality: 90 })
+    .jpeg({ quality: 92 })
     .toBuffer();
 }

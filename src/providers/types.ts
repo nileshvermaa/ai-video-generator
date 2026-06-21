@@ -43,6 +43,7 @@ export interface VideoRequest {
   durationSec: number;
   aspect: string;
   imageRef?: string;
+  quality?: "standard" | "high";
 }
 export interface VideoJobRef {
   providerJobId: string;

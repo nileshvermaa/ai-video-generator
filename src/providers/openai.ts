@@ -3,6 +3,8 @@
 // call time from the keystore (env var locally, encrypted Blob in production).
 import { OPENAI_BASE_URL } from "../env";
 import { getApiKey } from "../core/keystore";
+import { videoModel, videoSize } from "../core/sizes";
+import type { Aspect } from "../core/projects";
 import type {
   Provider,
   SpeechRequest,
@@ -27,10 +29,6 @@ function aspectToImageSize(aspect = "1:1"): string {
   if (aspect === "9:16") return "1024x1536";
   if (aspect === "16:9") return "1536x1024";
   return "1024x1024";
-}
-function aspectToVideoSize(aspect = "9:16"): string {
-  if (aspect === "16:9") return "1280x720";
-  return "720x1280"; // 9:16 default
 }
 
 export class OpenAIProvider implements Provider {
@@ -76,20 +74,23 @@ export class OpenAIProvider implements Provider {
   }
 
   planVideo(req: VideoRequest) {
+    const quality = req.quality ?? "high";
     return {
       endpoint: `${OPENAI_BASE_URL}/videos`,
       method: "POST",
-      body: { model: "sora-2", prompt: req.prompt, seconds: String(req.durationSec), size: aspectToVideoSize(req.aspect) },
+      body: { model: videoModel(quality), prompt: req.prompt, seconds: String(req.durationSec), size: videoSize(req.aspect as Aspect, quality).size },
     };
   }
 
   async createVideo(req: VideoRequest, imageBytes?: Buffer): Promise<VideoJobRef> {
-    const size = aspectToVideoSize(req.aspect);
+    const quality = req.quality ?? "high";
+    const model = videoModel(quality);
+    const size = videoSize(req.aspect as Aspect, quality).size;
     let res: Response;
     if (imageBytes) {
       // Image-to-video: multipart with input_reference (image must match size).
       const fd = new FormData();
-      fd.append("model", "sora-2");
+      fd.append("model", model);
       fd.append("prompt", req.prompt);
       fd.append("seconds", String(req.durationSec));
       fd.append("size", size);
@@ -100,7 +101,7 @@ export class OpenAIProvider implements Provider {
       res = await fetch(`${OPENAI_BASE_URL}/videos`, {
         method: "POST",
         headers: { ...(await authHeaders()), "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "sora-2", prompt: req.prompt, seconds: String(req.durationSec), size }),
+        body: JSON.stringify({ model, prompt: req.prompt, seconds: String(req.durationSec), size }),
       });
     }
     const text = await res.text();
